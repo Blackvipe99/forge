@@ -70,6 +70,12 @@ import java.util.function.Predicate;
 public final class FServerManager implements IHasForgeLog {
 
     static final int HEARTBEAT_TIMEOUT_SECONDS = Integer.getInteger("forge.net.heartbeatTimeout", 45);
+    /**
+     * Game state crosses the wire as Java-serialized objects, so a client built from
+     * different sources than the host may connect fine and then fail to deserialize
+     * something mid-game. Reject mismatches at login unless explicitly allowed.
+     */
+    static final boolean ALLOW_VERSION_MISMATCH = Boolean.getBoolean("forge.net.allowVersionMismatch");
 
     private static final int OUTBOUND_BUFFER_LOW_WATER = 64 * 1024;
     private static final int OUTBOUND_BUFFER_HIGH_WATER = 1024 * 1024;
@@ -833,6 +839,26 @@ public final class FServerManager implements IHasForgeLog {
         void setCompleted() { completed = true; }
     }
 
+    /**
+     * Tell a client whose build does not match ours why it is being turned away,
+     * then close its channel once the message has been flushed. The client never
+     * gets a lobby slot, so the usual disconnect bookkeeping is a no-op for it.
+     */
+    private void rejectVersionMismatch(final ChannelHandlerContext ctx, final String username,
+            final String clientVersion, final String hostVersion) {
+        final String shown = clientVersion == null ? "an unknown version" : "Forge " + clientVersion;
+        final String reason = String.format(
+                "Connection refused: this host is running Forge %s but you are running %s. "
+                + "Everyone must use the exact same Forge build (same version and build date) to play online.",
+                hostVersion, shown);
+        netLog.warn("[Login] Rejected {} at {}: client version {} != host {}",
+                username, ctx.channel().remoteAddress(), clientVersion, hostVersion);
+        broadcast(MessageEvent.warning(String.format(
+                "Rejected %s: they are running %s, this host is running Forge %s.",
+                username, shown, hostVersion)));
+        ctx.writeAndFlush(MessageEvent.warning(reason)).addListener(ChannelFutureListener.CLOSE);
+    }
+
     // --- Reconnection helper methods ---
 
     public boolean handleCommand(final String messageText) {
@@ -1115,6 +1141,13 @@ public final class FServerManager implements IHasForgeLog {
                     netLog.info("[Reconnect] Player reconnected: {}", username);
                 } else {
                     // Normal login flow
+                    final String clientVersion = event.getVersion();
+                    final String hostVersion = BuildInfo.getVersionString();
+                    final boolean versionMismatch = clientVersion == null || !clientVersion.equals(hostVersion);
+                    if (versionMismatch && !ALLOW_VERSION_MISMATCH) {
+                        rejectVersionMismatch(ctx, username, clientVersion, hostVersion);
+                        return;
+                    }
                     final int index = localLobby.connectPlayer(username, event.getAvatarIndex(), event.getSleeveIndex());
                     if (index == -1) {
                         ctx.close();
@@ -1126,9 +1159,8 @@ public final class FServerManager implements IHasForgeLog {
                             broadcastTo(new MessageEvent(formatAfkTimeoutMessage()),
                                     Collections.singleton(client));
                         }
-                        // Warn if client version differs from host
-                        final String clientVersion = event.getVersion();
-                        final String hostVersion = BuildInfo.getVersionString();
+                        // Warn if client version differs from host (only reachable with
+                        // -Dforge.net.allowVersionMismatch=true)
                         if (clientVersion == null) {
                             broadcast(MessageEvent.warning(String.format(
                                 "Warning: Could not determine %s's Forge version. "

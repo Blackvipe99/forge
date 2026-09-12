@@ -2,6 +2,7 @@ package forge.gamemodes.net.client;
 
 import com.google.common.collect.Lists;
 import forge.game.player.PlayerView;
+import forge.gamemodes.net.ChatMessage;
 import forge.gamemodes.net.CompatibleObjectDecoder;
 import forge.gamemodes.net.CompatibleObjectEncoder;
 import forge.gamemodes.net.NetworkLogConfig;
@@ -39,6 +40,10 @@ public class FGameClient implements IToServer, IHasForgeLog {
     private final ReplyPool replies = new ReplyPool();
     private volatile boolean disconnectSimulated;
     private Channel channel;
+    // Set once the server has given us a lobby slot. A warning that arrives before
+    // that and is followed by the channel closing is the server refusing our login.
+    private volatile boolean joinedLobby;
+    private volatile String loginRejectReason;
 
     public FGameClient(String username, IGuiGame clientGui, String hostname, int port) {
         this.username = username;
@@ -181,6 +186,9 @@ public class FGameClient implements IToServer, IHasForgeLog {
         @Override
         public void channelRead(final ChannelHandlerContext ctx, final Object msg) throws Exception {
             if (msg instanceof MessageEvent event) {
+                if (!joinedLobby && event.getType() == ChatMessage.MessageType.WARNING) {
+                    loginRejectReason = event.getMessage();
+                }
                 for (final ILobbyListener listener : lobbyListeners) {
                     listener.message(event.getSource(), event.getMessage(), event.getType());
                 }
@@ -193,6 +201,8 @@ public class FGameClient implements IToServer, IHasForgeLog {
         @Override
         public void channelRead(final ChannelHandlerContext ctx, final Object msg) throws Exception {
             if (msg instanceof LobbyUpdateEvent event) {
+                joinedLobby = true;
+                loginRejectReason = null;
                 for (final ILobbyListener listener : lobbyListeners) {
                     listener.update(event.getState(), event.getSlot());
                 }
@@ -215,8 +225,9 @@ public class FGameClient implements IToServer, IHasForgeLog {
         public void channelInactive(final ChannelHandlerContext ctx) throws Exception {
             netLog.info("[Disconnect] Channel became inactive, notifying {} listeners", lobbyListeners.size());
             netLog.info("[Disconnect] Remote address was: {}", ctx.channel().remoteAddress());
+            final String reason = joinedLobby ? null : loginRejectReason;
             for (final ILobbyListener listener : lobbyListeners) {
-                listener.close();
+                listener.close(reason);
             }
             super.channelInactive(ctx);
         }

@@ -197,7 +197,13 @@ public class NetConnectUtil {
             }
             @Override
             public void close() {
-                onlineLobby.closeConn(Localizer.getInstance().getMessage("lblYourConnectionToHostWasInterrupted", url));
+                close(null);
+            }
+            @Override
+            public void close(final String reason) {
+                // The host refusing our login is far more useful to read than "interrupted"
+                onlineLobby.closeConn(reason != null ? reason
+                        : Localizer.getInstance().getMessage("lblYourConnectionToHostWasInterrupted", url));
             }
             @Override
             public ClientGameLobby getLobby() {
